@@ -47,6 +47,7 @@ pub mod Staker {
     struct Storage {
         eth_token_dispatcher: IERC20CamelDispatcher,
         balances: Map<ContractAddress, u256>,
+        total_staked: u256,
         deadline: u64,
         open_for_withdraw: bool,
         external_contract_address: ContractAddress,
@@ -73,14 +74,14 @@ pub mod Staker {
             // assert that ExternalContract is not completed
             self.not_completed();
 
-            let sender = get_caller_address();
-            let contract = get_contract_address();
             // Ensure the staking period is still open
             let deadline = self.deadline.read();
             let current_time = get_block_timestamp();
             assert(current_time <= deadline, 0x1); // ERROR CODE 0x1
             
             // Check if the user has approved the staking contract to spend the amount
+            let sender = get_caller_address();
+            let contract = get_contract_address();
             let token_dispatcher = self.eth_token_dispatcher.read();
             let allowance = token_dispatcher.allowance(sender, contract);
             assert(allowance >= amount, 0x2); // ERROR CODE 0x2
@@ -94,10 +95,9 @@ pub mod Staker {
             self.balances.write(sender, new_sender_balance);
 
             // update total staked amount
-            let current_contract_balance = self.balances.read(contract);
-            let new_contract_balance = current_contract_balance + amount;
-            self.balances.write(contract, new_contract_balance);
-            
+            let current_total_staked = self.total_staked.read();
+            let new_total_staked = current_total_staked + amount;
+            self.total_staked.write(new_total_staked);
 
             // Emit the stake event
             self.emit(Stake { sender, amount });
@@ -123,7 +123,7 @@ pub mod Staker {
             // we should not use ERC20 balanceOf() to get the total staked amount
             // because there is a case that people transfer ETH directly to the contract, which will not be tracked by our Staker Contract
             // let staked_amount = self.eth_token_dispatcher.read().balanceOf(get_contract_address());
-            let staked_amount = self.total_balance();
+            let staked_amount = self.total_staked.read();
 
             if (staked_amount >= THRESHOLD) {
                 self.complete_transfer(staked_amount);
@@ -134,22 +134,23 @@ pub mod Staker {
 
         // ToDo Checkpoint 3: Implement your `withdraw` function here
         fn withdraw(ref self: ContractState) {
+            // check if we open for withdraw
+            assert(self.open_for_withdraw.read(), 0x5); // ERROR CODE 0x5
             self.not_completed();
 
             let sender = get_caller_address();
             let user_balance = self.balances.read(sender);
-            assert(user_balance > 0, 0x5); // ERROR CODE 0x5
+            assert(user_balance > 0, 0x6); // ERROR CODE 0x6
             
             // transfer token to user and reset staked amount
             let token_dispatcher = self.eth_token_dispatcher.read();
-            token_dispatcher.transfer(sender, user_balance);
             self.balances.write(sender, 0);
+            token_dispatcher.transfer(sender, user_balance);
             
             // update total staked amount
-            let contract = get_contract_address();
-            let current_contract_balance = self.balances.read(contract);
-            let new_contract_balance = current_contract_balance - user_balance;
-            self.balances.write(contract, new_contract_balance);
+            let current_total_staked = self.total_staked.read();
+            let new_total_staked = current_total_staked - user_balance;
+            self.total_staked.write(new_total_staked);
         }
 
         fn balances(self: @ContractState, account: ContractAddress) -> u256 {
@@ -157,7 +158,7 @@ pub mod Staker {
         }
 
         fn total_balance(self: @ContractState) -> u256 {
-            self.balances.read(get_contract_address())
+            self.total_staked.read()
         }
 
         fn deadline(self: @ContractState) -> u64 {
@@ -223,6 +224,7 @@ pub mod Staker {
         }
         // ToDo Checkpoint 3: Implement your not_completed function here
         fn not_completed(ref self: ContractState) {
+            // since the function signature does not have a return type, so i will make an assert
             let external_contract_address = self.external_contract_address.read();
             let external_contract = IExampleExternalContractDispatcher { contract_address: external_contract_address };
             assert(!external_contract.completed(), 0x4);  // ERROR CODE 0x4
